@@ -4,9 +4,9 @@
 ; States and/or other countries. All rights reserved.
 
 ## Title: Jump
-## Description: This addon counts how many jumps you do as a player
+## Description: This addon counts jumps for you and players in your group
 ## Author: @uberswe
-## Version: 1.2
+## Version: 1.3
 ## APIVersion: 101035 101036
 ## SavedVariables: JumpSavedVariables
 
