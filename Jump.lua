@@ -3,7 +3,6 @@ JUMP = {}
 JUMP.name = "Jump"
 JUMP.savedData = {}
 JUMP.player = {}
-JUMP.player.isJumping = false
 JUMP.player.overallJumpCount = 0
 JUMP.player.timeSinceLastJump = 0
 JUMP.player.jumps = 0
@@ -16,136 +15,134 @@ JUMP.isInGroup = false
 JUMP.groupSize = 0
 JUMP.group = {}
 JUMP.savedData.debug = false
+JUMP.savedData.hideBackground = true
 JUMP.inMenu = false
+JUMP.elevationBuffer = math.floor(700 / JUMP.delay)
+JUMP.minLookBack = math.floor((500 - JUMP.delay) / JUMP.delay)
+JUMP.maxLookBack = math.floor(500 / JUMP.delay)
 
 -- A regular jump is an increase of 160 in 500ms.
 -- but this could vary a lot since we only poll at certain intervals, may need to poll more often to be more accurate
-JUMP.jumpBuffer = 25
--- We assume if the last 3 elevations are within this value that we have landed
-JUMP.landedBuffer = 5
+JUMP.jumpBuffer = math.floor(JUMP.delay / 4)
 
--- Functions that trigger the beginning of a possible jump
+-- Functions that trigger a jump
 function JUMP.RegularJump(obj)
-    -- Are we jumping by pressing space?
     if obj.timeSinceLastJump < 1000 then
         return false
     end
-    if not obj.elevations[2] or not obj.elevations[1] or obj.isJumping then
+    local peakElevation = 0
+    local lowestElevation = 0
+    for key, val in ipairs(obj.elevations) do
+        -- We are going backwards in time here, we want the current value to be higher than the next value since we want to find a peak in our jump and then check if the next n values seem to indicate a jump
+        if obj.elevations[key + 1] and val > obj.elevations[key + 1] and val > peakElevation then
+            peakElevation = val
+        end
+        -- After we found our jump peak we keep looping to find the beginning of our jump which is any value lower than our peak that came before we reached our peak, the loop is backwards in time
+        if peakElevation > 0 and (lowestElevation == 0 or val + JUMP.jumpBuffer < lowestElevation) then
+            lowestElevation = val
+        end
+    end
+    if lowestElevation == 0 or peakElevation == 0 then
         return false
     end
-    if obj.elevations[2] > 0 and obj.elevations[2] + JUMP.jumpBuffer < obj.elevations[1] then
-        return true
+    -- We expect a jump to be around 160
+    if peakElevation - lowestElevation > 165 then
+        if JUMP.savedData.debug then
+            CHAT_ROUTER:AddSystemMessage(string.format("Invalid jump, too high: %d", peakElevation - lowestElevation))
+        end
+        return false
     end
+    if peakElevation - lowestElevation < 145 then
+        if JUMP.savedData.debug and peakElevation - lowestElevation > 10 then
+            CHAT_ROUTER:AddSystemMessage(string.format("Invalid jump, too low: %d", peakElevation - lowestElevation))
+        end
+        return false
+    end
+    local lastVal = 0
+    local lastValKey = 0
+    for key, val in ipairs(obj.elevations) do
+        -- this is the middle of the jump going backwards
+        if peakElevation == val and key > 1 then
+            lastVal = val
+            lastValKey = key
+        end
+        if lastVal ~= 0 then
+            -- we found the jump going backwards with 4 to 5 consecutive increments at 100ms, a jump should only take about 500ms but we do have lag here
+            if key - lastValKey >= JUMP.minLookBack and key - lastValKey <= JUMP.maxLookBack then
+                if JUMP.savedData.debug then
+                    local debugElevationString = ""
+                    for key2, val2 in ipairs(obj.elevations) do
+                        debugElevationString = string.format("%d:%d %s", key2, val2, debugElevationString)
+                    end
+                    CHAT_ROUTER:AddSystemMessage(string.format("Elevations: %s", debugElevationString))
+                end
+                return true
+            end
+            if lastVal < val then
+                return false
+            end
+        end
+    end
+
     return false
 end
 
---function JUMP.RunOffCliff(obj)
---    -- What about running off a cliff?
---    if obj.timeSinceLastJump < 1000 then
---        return false
---    end
---    if not obj.elevations[2] or not obj.elevations[1] or obj.isJumping then
---        return false
---    end
---    if obj.elevations[2] > 0 and obj.elevations[1] + JUMP.jumpBuffer < obj.elevations[2] then
---        return true
---    end
---    return false
---end
-
-JUMP.possibleJumpIndicators = {
-    --runOffCliff = JUMP.RunOffCliff,
+JUMP.JumpIndicators = {
     regularJump = JUMP.RegularJump
 }
 
--- Functions that find the end of a jump
-
-function JUMP.UpwardsJump(obj)
-    -- If jump start is lower than the peak we jumped upwards, but the current elevation is lower than our peak and our elevation is greater than our current elevation we must have landed since we changed elevation direction
-    if not obj.elevations[1] or not obj.elevations[2] then
-        return false
-    end
-
-    if obj.jumpStart < obj.jumpPeak and obj.elevations[1] < obj.jumpPeak and obj.elevations[2] > obj.elevations[1] then
-        return true
-    end
-    return false
-end
-
---function JUMP.FallJump(obj)
---    -- If our last 5 elevations are all within landedBuffer we have landed
---    local check = 5
---    for i=1,check,1 do
---        if not obj.elevations[i] then
---            return false
---        end
---    end
---    for i=1,check,1 do
---        for x=1,check,1 do
---            if math.abs(obj.elevations[i] - obj.elevations[x]) > JUMP.landedBuffer then
---                return false
---            end
---        end
---    end
---    return true
---end
-
-JUMP.jumpIndicators = {
-    upwardsJump = JUMP.UpwardsJump,
-    --fallJump = JUMP.FallJump
-}
-
--- Functions that find the end of a false jump
-
-function JUMP.Expire(obj)
-    return obj.timeSinceLastJump > 10000
-end
-
-function JUMP.StairCheck(obj)
-    -- If we go up stairs we expect a fairly consistent climb but in a jump our speed differs throughout the jump
-    if obj.timeSinceLastJump < 500 then
-        return false
-    end
-
-    -- Works ok going up stairs but conflicts with falls and going down stairs
-    if obj.jumpPeak == obj.jumpStart then
-        return false
-    end
-
-    local check = 10
-    for i=1,check,1 do
-        if not obj.elevations[i] then
-            return false
-        end
-    end
-    if (math.abs(obj.elevations[1] - obj.elevations[2]) > JUMP.jumpBuffer) then
-        return false
-    end
-    local lastCheck = math.abs(obj.elevations[2] - obj.elevations[3])
-    if lastCheck < JUMP.jumpBuffer then
-        return false
-    end
-    for i=2,check,1 do
-        for x=2,check,1 do
-            if JUMP.savedData.debug then
-                CHAT_ROUTER:AddSystemMessage(string.format("StairCheck %s: %d - not (%d < %d and %d > %d)", obj.unitTag, lastCheck, math.abs(obj.elevations[i] - obj.elevations[x]), JUMP.landedBuffer + lastCheck, math.abs(obj.elevations[i] - obj.elevations[x]), lastCheck - JUMP.landedBuffer))
-            end
-            if not i == x then
-                if not (math.abs(obj.elevations[i] - obj.elevations[x]) < JUMP.landedBuffer + lastCheck and math.abs(obj.elevations[i] - obj.elevations[x]) > lastCheck - JUMP.landedBuffer) then
-                    return false
+function JUMP:RegisterMenu()
+    if LibAddonMenu2 then
+        local LAM = LibAddonMenu2
+        local panelName = "JUMPSettingsPanel"
+        local panelData = {
+            type = "panel",
+            name = "Jump",
+            author = "@uberswe",
+        }
+        local panel = LAM:RegisterAddonPanel(panelName, panelData)
+        local optionsData = {
+            {
+                type = "description",
+                title = nil, --(optional)
+                text = "The Jump addon estimates jumps based on players x,y,z coordinates, it's not perfect but I have worked hard to make it as accurate as possible. Please report any issues you find on ESOUI or send me a mail on PC EU to @uberswe. Enjoy the addon? Feel free to send some gold instead :)",
+                width = "full", --or "half" (optional)
+            },
+            {
+                type = "checkbox",
+                name = "Show background",
+                getFunc = function()
+                    return not JUMP.savedData.hideBackground
+                end,
+                setFunc = function(value)
+                    JUMP.savedData.hideBackground = not value
                 end
-                lastCheck = math.abs(obj.elevations[i] - obj.elevations[x])
-            end
-        end
+            },
+            {
+                type = "checkbox",
+                name = "Hide UI",
+                getFunc = function()
+                    return JUMP.savedData.hidden
+                end,
+                setFunc = function(value)
+                    JUMP.savedData.hidden = value
+                end
+            },
+            {
+                type = "checkbox",
+                name = "Debug Mode",
+                getFunc = function()
+                    return JUMP.savedData.debug
+                end,
+                setFunc = function(value)
+                    JUMP.savedData.debug = value
+                end
+            }
+        }
+
+        LAM:RegisterOptionControls(panelName, optionsData)
     end
-    return true
 end
-
-
-JUMP.falseJumps = {
-    expire = JUMP.Expire,
-    stairCheck = JUMP.StairCheck
-}
 
 function JUMP:Initialize()
     -- Do some init stuff
@@ -172,9 +169,21 @@ function JUMP:Initialize()
 
     JUMP.player.elevations[1] = JUMP:GetCurrentElevation("player")
 
+    if JUMP.savedData.debug then
+
+        zo_callLater(function()
+            CHAT_ROUTER:AddSystemMessage(string.format("jumpBuffer: %d", JUMP.jumpBuffer))
+            CHAT_ROUTER:AddSystemMessage(string.format("elevationBuffer: %d", JUMP.elevationBuffer))
+            CHAT_ROUTER:AddSystemMessage(string.format("polling every %dms", JUMP.delay))
+            CHAT_ROUTER:AddSystemMessage(string.format("minLookBack: %d", JUMP.minLookBack))
+            CHAT_ROUTER:AddSystemMessage(string.format("maxLookBack: %d", JUMP.maxLookBack))
+        end, 1000)
+    end
+
     JUMPUI:SetHidden(JUMP.savedData.hidden)
     JUMP.OnGroupChange()
     JUMP:UpdateUI()
+    JUMP:RegisterMenu()
 end
 
 function JUMP:UpdateUI()
@@ -187,7 +196,7 @@ function JUMP:UpdateUI()
             end
         end
         table.sort(JUMP.group, function(aa, bb)
-            if not aa.jumps or not bb.jumps then
+            if not aa or not bb or not aa.jumps or not bb.jumps then
                 return true
             end
             return aa.jumps > bb.jumps
@@ -203,30 +212,34 @@ function JUMP:UpdateUI()
                         if not row then
                             row = CreateControlFromVirtual("GROUP_MEMBER_LABEL" .. tostring(index), JUMPUI, "GROUP_MEMBER_LABEL", tostring(index))
                         end
-                        if not lastRow then
-                            row:SetAnchor(BOTTOMLEFT, JUMP_OVERALL_LABEL, BOTTOMLEFT, 0, 50)
-                        else
-                            row:SetAnchor(BOTTOMLEFT, lastRow, BOTTOMLEFT, 0, 50)
-                        end
-                        row:SetText(string.format("%s: %s", data.accname, data.jumps))
-                        row:SetHidden(false)
-                        JUMP.rows[index] = row
-                        lastRow = row
-                        count = count + 1
-                        if JUMP.savedData.debug then
-                            CHAT_ROUTER:AddSystemMessage(string.format("Added row: %s", tostring(index)))
+                        if row then
+                            if not lastRow then
+                                row:SetAnchor(BOTTOMLEFT, JUMP_OVERALL_LABEL, BOTTOMLEFT, 0, 50)
+                            else
+                                row:SetAnchor(BOTTOMLEFT, lastRow, BOTTOMLEFT, 0, 50)
+                            end
+                            if data.accname and data.jumps then
+                                row:SetText(string.format("%s: %s", data.accname, data.jumps))
+                            end
+                            row:SetHidden(false)
+                            JUMP.rows[index] = row
+                            lastRow = row
+                            count = count + 1
+                            if JUMP.savedData.debug then
+                                CHAT_ROUTER:AddSystemMessage(string.format("Added row: %s", tostring(index)))
+                            end
                         end
                     end
                 end
             else
                 -- No need to make new controls, just set the text of the row here
                 for index, data in ipairs(JUMP.group) do
-                    if data.unitTag and IsUnitOnline(data.unitTag) then
-                        if JUMP.rows[index] then
+                    if data.unitTag then
+                        if JUMP.rows and JUMP.rows[index] and data.accname and data.jumps then
                             JUMP.rows[index]:SetText(string.format("%s: %s", data.accname, data.jumps))
                             JUMP.rows[index]:SetHidden(false)
                         else
-                            if JUMP.savedData.debug then
+                            if JUMP.savedData.debug and data.unitTag then
                                 CHAT_ROUTER:AddSystemMessage(string.format("no row found: %s", tostring(data.unitTag)))
                             end
                         end
@@ -240,7 +253,8 @@ function JUMP:UpdateUI()
         end
 
     end
-    JUMPUI:SetHidden(JUMP.inMenu)
+    JUMPUI:SetHidden(JUMP.inMenu or JUMP.savedData.hidden)
+    JUMP_CONTAINER:SetHidden(JUMP.savedData.hideBackground)
     JUMP_CONTAINER:SetDimensions(200, 25 * (2 + JUMP.groupSize))
 end
 
@@ -273,7 +287,7 @@ function JUMP:SaveLastElevations(pastElevations, currentElevation, count)
     local newElevations = {}
     if pastElevations then
         for key, val in pairs(pastElevations) do
-            newElevations[key+1] = val
+            newElevations[key + 1] = val
             if key == count then
                 break
             end
@@ -290,61 +304,19 @@ function JUMP:CountJumpsForUnit(obj)
         return false
     end
 
-    obj.elevations = JUMP:SaveLastElevations(obj.elevations, JUMP:GetCurrentElevation(obj.unitTag), 10)
+    obj.elevations = JUMP:SaveLastElevations(obj.elevations, JUMP:GetCurrentElevation(obj.unitTag), JUMP.elevationBuffer)
 
-    if JUMP.savedData.debug then
-        if obj.elevations[1] and obj.elevations[2] and obj.elevations[2] ~= obj.elevations[1] then
-            if obj.isJumping then
-                CHAT_ROUTER:AddSystemMessage(string.format("Jumping elevation for %s: %d", obj.unitTag, obj.elevations[1]))
-            end
-        end
-    end
-
-    -- Are we still jumping?
-    if obj.isJumping then
-        for key, func in pairs(JUMP.jumpIndicators) do
-            if func(obj) then
-                obj.isJumping = false
-                obj.jumps = obj.jumps + 1
-                if GetUnitDisplayName(obj.unitTag) == GetUnitDisplayName("player") then
-                    JUMP.player.overallJumpCount = JUMP.player.overallJumpCount + 1
-                end
-                obj.timeSinceLastJump = obj.timeSinceLastJump + JUMP.delay
-                if JUMP.savedData.debug then
-                    CHAT_ROUTER:AddSystemMessage(string.format("Jump finished after %d ms: %s", obj.timeSinceLastJump, key))
-                end
-                updated = true
-            end
-        end
-
-        for key, func in pairs(JUMP.falseJumps) do
-            if func(obj) then
-                obj.isJumping = false
-                obj.timeSinceLastJump = 0
-                if JUMP.savedData.debug then
-                    CHAT_ROUTER:AddSystemMessage(string.format("Invalid jump: %s", key))
-                end
-            end
-        end
-
-        if obj.elevations[1] and obj.elevations[1] > obj.jumpPeak then
-            obj.jumpPeak = obj.elevations[1]
-        end
-    end
-
-    for key, func in pairs(JUMP.possibleJumpIndicators) do
+    for key, func in pairs(JUMP.JumpIndicators) do
         if func(obj) then
-            if obj.elevations[2] then
-                obj.jumpStart = obj.elevations[2]
-                obj.jumpPeak = obj.elevations[2]
-            else
-                obj.jumpStart = obj.elevations[1]
-                obj.jumpPeak = obj.elevations[1]
+            obj.jumps = obj.jumps + 1
+            if GetUnitDisplayName(obj.unitTag) == GetUnitDisplayName("player") then
+                JUMP.player.overallJumpCount = JUMP.player.overallJumpCount + 1
             end
-            obj.isJumping = true
+            obj.elevations = {}
             obj.timeSinceLastJump = 0
+            updated = true
             if JUMP.savedData.debug then
-                CHAT_ROUTER:AddSystemMessage(string.format("Possible jump: %s", key))
+                CHAT_ROUTER:AddSystemMessage(string.format("Jump: %s", key))
             end
         end
     end
@@ -385,7 +357,6 @@ function JUMP.OnGroupChange()
                     list[i].elevations[1] = JUMP:GetCurrentElevation(unitTag)
                     list[i].jumpStart = 0
                     list[i].jumpPeak = 0
-                    list[i].isJumping = false
                     if JUMP.savedData.debug then
                         CHAT_ROUTER:AddSystemMessage(string.format("added %s - %s", name, unitTag))
                     end
@@ -487,7 +458,6 @@ function JUMP.ShareOverall(options)
 end
 
 function JUMP.ToggleUI(options)
-    JUMPUI:SetHidden(not JUMP.savedData.hidden)
     JUMP.savedData.hidden = not JUMP.savedData.hidden
     if JUMP.savedData.hidden then
         CHAT_ROUTER:AddSystemMessage("Jump UI hidden")
